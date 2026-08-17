@@ -27,63 +27,51 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
-          sdkmanager "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
 
-      - name: Find Android project
-        shell: bash
+      - name: Find Gradle project
         run: |
-          set -e
-
           echo "Repository:"
           pwd
-          echo
-          echo "Files:"
-          find . -maxdepth 3 -type f \
-            \( -name "gradlew" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+          echo "----------------"
+
+          find . -maxdepth 5 -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "build.gradle" -o -name "build.gradle.kts" \) \
             -print
 
-          PROJECT_DIR=""
-
-          if [ -f "./gradlew" ]; then
-            PROJECT_DIR="."
-          else
-            PROJECT_DIR=$(find . -type f -name "gradlew" -print -quit | xargs -r dirname)
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: gradlew not found."
-            exit 1
-          fi
-
-          PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd)
-
-          echo "Android project found at:"
-          echo "$PROJECT_DIR"
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-      - name: Grant execute permission
-        run: |
-          chmod +x "$PROJECT_DIR/gradlew"
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
       - name: Build Debug APK
         run: |
-          cd "$PROJECT_DIR"
-          ./gradlew :app:assembleDebug --stacktrace --no-daemon
+          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
+            gradle :app:assembleDebug --stacktrace --no-daemon
+          else
+            PROJECT_DIR=$(find . -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit | xargs -r dirname)
+
+            if [ -z "$PROJECT_DIR" ]; then
+              echo "ERROR: No Gradle project found."
+              exit 1
+            fi
+
+            cd "$PROJECT_DIR"
+            gradle :app:assembleDebug --stacktrace --no-daemon
+          fi
 
       - name: Find APK
         run: |
-          echo "APK files:"
-          find "$PROJECT_DIR" -type f -name "*.apk" -print
+          echo "Searching for APK..."
+          find . -type f -name "*.apk" -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Streamix-debug-apk
-          path: |
-            **/build/outputs/apk/**/*.apk
+          path: "**/build/outputs/apk/**/*.apk"
           if-no-files-found: error
