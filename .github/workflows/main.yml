@@ -122,9 +122,7 @@ jobs:
           if [[ -f gradle/wrapper/gradle-wrapper.jar ]]; then
             echo "Gradle wrapper JAR exists."
             ls -lh gradle/wrapper/gradle-wrapper.jar
-          else
-            echo "Gradle wrapper JAR is missing; CI will use system Gradle 8.9."
-          fi
+   https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
 
       - name: Clean project
         working-directory: ${{ steps.project.outputs.project_dir }}
