@@ -1,11 +1,10 @@
-name: Build APK
+name: Build Debug APK
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-      - master
 
 permissions:
   contents: read
@@ -33,45 +32,60 @@ jobs:
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
-      - name: Find Gradle project
+      - name: Extract Android project ZIP
         run: |
-          echo "Repository:"
-          pwd
-          echo "----------------"
+          mkdir -p project
 
-          find . -maxdepth 5 -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "build.gradle" -o -name "build.gradle.kts" \) \
-            -print
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
 
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: ZIP file not found"
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+
+          unzip -q "$ZIP_FILE" -d project
+
+          echo "Extracted files:"
+          find project -maxdepth 4 -type f | head -200
+
+      - name: Find Android project
+        run: |
+          PROJECT_DIR=$(find project -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -print -quit | xargs -r dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android Gradle project not found inside ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd)
+
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Build Debug APK
         run: |
-          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
-            gradle :app:assembleDebug --stacktrace --no-daemon
-          else
-            PROJECT_DIR=$(find . -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit | xargs -r dirname)
+          cd "$PROJECT_DIR"
 
-            if [ -z "$PROJECT_DIR" ]; then
-              echo "ERROR: No Gradle project found."
-              exit 1
-            fi
+          chmod +x gradlew
 
-            cd "$PROJECT_DIR"
-            gradle :app:assembleDebug --stacktrace --no-daemon
-          fi
+          ./gradlew :app:assembleDebug \
+            --stacktrace \
+            --no-daemon
 
       - name: Find APK
         run: |
-          echo "Searching for APK..."
-          find . -type f -name "*.apk" -print
+          echo "APK files:"
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
 
-      - name: Upload APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Streamix-debug-apk
+          name: Streamix-Debug-APK
           path: "**/build/outputs/apk/**/*.apk"
           if-no-files-found: error
