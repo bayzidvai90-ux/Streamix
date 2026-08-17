@@ -19,115 +19,186 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Find ZIP
-        id: find_zip
+      - name: Find and extract Android project
+        shell: bash
         run: |
-          echo "Files in repository:"
-          find . -maxdepth 3 -type f -print
+          set -e
 
-          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" | head -n 1)
+          echo "Repository files:"
+          find . -maxdepth 3 -type f | sort | head -200
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found."
-            exit 1
+          ZIP_FILE=$(find . -maxdepth 2 -type f \
+            \( -iname "*.zip" \) | head -n 1)
+
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP found: $ZIP_FILE"
+
+            rm -rf extracted
+            mkdir -p extracted
+
+            unzip -q "$ZIP_FILE" -d extracted
+
+            echo "Extracted files:"
+            find extracted -maxdepth 4 -type f | sort | head -200
+          else
+            echo "No ZIP found. Using repository itself."
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-
-      - name: Extract Android project ZIP
+      - name: Locate Gradle project
+        shell: bash
         run: |
-          rm -rf extracted
-          mkdir -p extracted
+          set -e
 
-          unzip -q "$ZIP_FILE" -d extracted
+          PROJECT_DIR=""
 
-          echo "Extracted files:"
-          find extracted -maxdepth 5 -type f | head -200
-
-      - name: Find Android project
-        run: |
-          PROJECT_DIR=$(find extracted -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            -printf '%h\n' | head -n 1)
+          for f in \
+            extracted/settings.gradle.kts \
+            extracted/settings.gradle \
+            extracted/*/settings.gradle.kts \
+            extracted/*/settings.gradle \
+            settings.gradle.kts \
+            settings.gradle
+          do
+            if [ -f "$f" ]; then
+              PROJECT_DIR="$(dirname "$f")"
+              break
+            fi
+          done
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android Gradle project not found."
-            echo "Looking for Gradle files..."
-            find extracted -type f \
-              \( -name "build.gradle" -o -name "build.gradle.kts" \)
+            PROJECT_DIR=$(find extracted . -type f \
+              \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+              -print -quit | xargs -r dirname)
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android/Gradle project not found."
             exit 1
           fi
 
-          echo "Android project found at: $PROJECT_DIR"
+          PROJECT_DIR=$(realpath "$PROJECT_DIR")
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Install Gradle 8.9
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
+          echo "Project files:"
+          find "$PROJECT_DIR" -maxdepth 3 -type f | sort | head -250
+
+      - name: Install Gradle 8.7.2
+        shell: bash
         run: |
-          wget -q https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          set -e
 
-          unzip -q gradle-8.9-bin.zip -d "$HOME"
+          GRADLE_VERSION="8.7.2"
+          GRADLE_DIR="$RUNNER_TEMP/gradle-$GRADLE_VERSION"
 
-          echo "$HOME/gradle-8.9/bin" >> "$GITHUB_PATH"
+          wget -q \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+            -O "$RUNNER_TEMP/gradle.zip"
 
-          "$HOME/gradle-8.9/bin/gradle" --version
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
 
-      - name: Remove broken Gradle wrapper
+          echo "$RUNNER_TEMP/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+          gradle --version
+
+      - name: Repair Gradle wrapper
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          rm -f gradle/wrapper/gradle-wrapper.jar
-          echo "Broken Gradle wrapper removed."
+          set -e
+
+          echo "Removing broken wrapper files..."
+
+          rm -f gradle/wrapper/gradle-wrapper.jar || true
+          rm -f gradle/wrapper/gradle-wrapper.properties || true
+
+          mkdir -p gradle/wrapper
+
+          cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.7.2-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          echo "Generating fresh Gradle wrapper..."
+
+          gradle wrapper \
+            --gradle-version 8.7.2 \
+            --distribution-type bin \
+            --no-daemon
+
+          chmod +x gradlew
+
+          ./gradlew --version
+
+      - name: Clean project
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          ./gradlew clean --no-daemon
 
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          gradle --no-daemon \
+          set -e
+
+          ./gradlew \
+            :app:assembleDebug \
+            --no-daemon \
             --stacktrace \
-            --info \
-            assembleDebug
+            --warning-mode all
 
-      - name: Find APK
+      - name: Find Debug APK
         id: find_apk
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          echo "Searching for APK..."
+          set -e
 
-          APK=$(find "${PROJECT_DIR}" \
-            -type f \
+          APK=$(find . -type f \
             -path "*/build/outputs/apk/debug/*.apk" \
             | head -n 1)
 
           if [ -z "$APK" ]; then
             echo "ERROR: Debug APK was not generated."
-            echo "All APK files:"
-            find "${PROJECT_DIR}" -type f -name "*.apk" || true
+            echo "Searching all APK files..."
+            find . -type f -name "*.apk" -print
             exit 1
           fi
 
           echo "APK found:"
           echo "$APK"
 
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/apk"
 
-      - name: Rename Debug APK
-        run: |
-          mkdir -p output
-          cp "$APK_PATH" output/Streamix-debug.apk
-
-          echo "Final APK:"
-          ls -lh output/Streamix-debug.apk
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/apk/Streamix-Debug.apk"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Streamix-Debug-APK
-          path: output/Streamix-debug.apk
+          path: apk/Streamix-Debug.apk
           if-no-files-found: error
+          retention-days: 7
